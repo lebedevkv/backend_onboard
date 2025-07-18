@@ -1,127 +1,112 @@
+from __future__ import annotations
 from datetime import datetime
+from uuid import UUID
 
-from pydantic import BaseModel, Field
-from typing import List, Optional
-from app.schemas.user import UserRead
-from app.schemas.company import CompanyRead
+from pydantic import BaseModel, ConfigDict
+from app.models.enums import (
+    QuestStatus,
+    QuestStepApprovalRole,
+    QuestAssignmentStatus,
+    StepSubmissionStatus,
+)
 
-# Quest Template Schemas
-class QuestTemplateBase(BaseModel):
+# Quest schemas
+class QuestBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    company_id: UUID
     title: str
-    description: Optional[str] = None
-    deadline_days: Optional[int] = None
-    created_at: Optional[datetime] = None
-    company_id: Optional[int] = None
+    description: str | None = None
+    duration_days: int | None = None
+    is_mandatory: bool = True
+    status: QuestStatus | None = None
 
-class QuestTemplateCreate(QuestTemplateBase):
-    steps: List['QuestStepCreate']
-    deadline_days: int
-    company_id: Optional[int] = None
-    author_id: int
+class QuestCreate(QuestBase):
+    """Request model for creating a new quest template."""
+    pass
 
-class QuestTemplateUpdate(QuestTemplateBase):
-    steps: Optional[List['QuestStepCreate']] = None
-    deadline_days: Optional[int] = None
-    company_id: Optional[int] = None
+class QuestUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
-class QuestTemplateRead(QuestTemplateBase):
-    id: int
-    author: Optional[UserRead] = None
-    company: Optional[CompanyRead] = None
-    steps: List['QuestStepRead']
+    title: str | None = None
+    description: str | None = None
+    duration_days: int | None = None
+    is_mandatory: bool | None = None
+    status: QuestStatus | None = None
 
-    class Config:
-        from_attributes = True
+class QuestRead(QuestBase):
+    id: UUID
+    created_by_member: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
 
-QuestTemplateResponse = QuestTemplateRead
-
-# Quest Step Schemas
+# Quest Step schemas
 class QuestStepBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    quest_id: UUID
     title: str
-    description: Optional[str] = None
-    order: int = 0
-    points: Optional[int] = 0
-    deadline_days: Optional[int] = None
+    step_type: str
+    required: bool = True
+    content_json: dict | None = None
+    approval_required_role: QuestStepApprovalRole = QuestStepApprovalRole.NONE
+    sort_order: int
 
 class QuestStepCreate(QuestStepBase):
-    author_id: int
+    """Request model for creating a quest step."""
+    pass
 
 class QuestStepUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    order: Optional[int] = None
-    points: Optional[int] = None
-    deadline_days: Optional[int] = None
-    author_id: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
+
+    title: str | None = None
+    step_type: str | None = None
+    required: bool | None = None
+    content_json: dict | None = None
+    approval_required_role: QuestStepApprovalRole | None = None
+    sort_order: int | None = None
 
 class QuestStepRead(QuestStepBase):
-    id: int
-    quest_template_id: int
-    author: Optional[UserRead] = None
+    id: UUID
+    created_at: datetime
 
-    class Config:
-        from_attributes = True
-
-class QuestStepResponse(QuestStepRead):
-    pass
-
-# Quest Assignment Schemas
+# Quest Assignment schemas
 class QuestAssignmentBase(BaseModel):
-    employee_id: int
-    template_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+    quest_id: UUID
+    membership_id: UUID
 
 class QuestAssignmentCreate(QuestAssignmentBase):
-    deadline: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
+    """Request model for assigning a quest to a member."""
+    override_duration_days: int | None = None
 
 class QuestAssignmentRead(QuestAssignmentBase):
-    id: int
-    deadline: Optional[datetime] = None
-    status: str
-    steps: List[QuestStepRead]
+    id: UUID
+    assigned_by_member: UUID | None = None
+    assigned_at: datetime
+    due_at: datetime | None = None
+    completed_at: datetime | None = None
+    status: QuestAssignmentStatus
+    progress_percent: float
 
-    class Config:
-        from_attributes = True
+# Quest Step Submission schemas
+class QuestStepSubmissionBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
-class QuestAssignmentResponse(BaseModel):
-    id: int
-    employee_id: int
-    template_id: int
-    completed: bool
-    progress: Optional[List['QuestProgressRead']] = Field(default_factory=list)
+    quest_assignment_id: UUID
+    quest_step_id: UUID
+    data_json: dict | None = None
 
-    class Config:
-        from_attributes = True
+class QuestStepSubmissionUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
-# Quest Progress Schemas
-class QuestProgressBase(BaseModel):
-    step_id: int
-    assignment_id: int
-    is_completed: bool
-    comment: Optional[str] = None
+    status: StepSubmissionStatus
+    data_json: dict | None = None
 
-class QuestProgressCreate(BaseModel):
-    step_id: int
-    assignment_id: int
-    comment: Optional[str] = None
-    is_completed: bool = False
-
-class QuestProgressUpdate(BaseModel):
-    comment: Optional[str] = None
-    is_completed: Optional[bool] = None
-
-class QuestProgressRead(QuestProgressBase):
-    id: int
-
-    class Config:
-        from_attributes = True
-
-class QuestProgressResponse(QuestProgressRead):
-    pass
-
-# For forward references
-QuestTemplateCreate.update_forward_refs()
-QuestTemplateRead.update_forward_refs()
-QuestAssignmentResponse.update_forward_refs()
+class QuestStepSubmissionRead(QuestStepSubmissionBase):
+    id: UUID
+    status: StepSubmissionStatus
+    submitted_at: datetime | None = None
+    reviewed_by_member: UUID | None = None
+    reviewed_at: datetime | None = None

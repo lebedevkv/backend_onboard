@@ -1,5 +1,19 @@
-from app.db.base_class import Base
+"""SQLAlchemy metadata export for Alembic autogenerate."""
+from __future__ import annotations
 
-# Импорт моделей, чтобы Alembic мог их "увидеть"
-from app.models.user import User
-from app.models.company import Company
+from app.models.base import Base  # декларативная база
+
+# ВАЖНО: импортируем все ORM-классы, чтобы Alembic «увидел» их при автогенерации
+from app.models.models import (  # noqa: F401
+    User,
+    Company,
+    CompanyDomain,
+    Membership,
+    MembershipManager,
+    Quest,
+    QuestStep,
+    QuestAssignment,
+    QuestStepSubmission,
+    ProbationTask,
+    ProbationReview,
+)

@@ -1,107 +1,84 @@
+from __future__ import annotations
+from typing import Callable
+
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.user import User
+from app.utils.security import get_current_user          # JWT-валидация + User
+from app.models.models import Membership
+from app.models.enums import GlobalRole, MembershipRole, MembershipStatus
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+# ---------------------------------------------------------------------------
+# DB-сессия
+# ---------------------------------------------------------------------------
 
-
-def get_db():
-    db = SessionLocal()
+def get_db() -> Callable[[], Session]:
+    """Yield SQLAlchemy session for request scope."""
+    db: Session = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
+# ---------------------------------------------------------------------------
+# Глобальные проверки ролей
+# ---------------------------------------------------------------------------
 
-def decode_token(token: str) -> dict:
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        return payload
-    except JWTError:
+def require_super_admin(current_user=Depends(get_current_user)):
+    if current_user.global_role != GlobalRole.SUPER_ADMIN:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Не удалось проверить токен",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Требуется роль SuperAdmin",
         )
-
-
-def get_user_by_id(user_id: int, db: Session) -> User | None:
-    return db.query(User).filter(User.id == user_id).first()
-
-
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
-) -> User:
-    payload = decode_token(token)
-    user_id: str = payload.get("sub")
-    if user_id is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Токен не содержит ID пользователя")
-
-    user = get_user_by_id(user_id=int(user_id), db=db)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
-    return user
-
-
-# --- Ролевые проверки ---
-
-
-
-def require_admin_or_hr(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role == "super_admin":
-        return current_user
-    if current_user.role == "company_admin" or current_user.role == "hr":
-        return current_user
-    raise HTTPException(status_code=403, detail="Недостаточно прав доступа")
-
-
-def require_company_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role == "super_admin":
-        return current_user
-    if current_user.role == "company_admin":
-        return current_user
-    raise HTTPException(status_code=403, detail="Недостаточно прав доступа")
-
-
-def require_super_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != "super_admin":
-        raise HTTPException(status_code=403, detail="Доступ разрешён только супер-администратору")
     return current_user
 
 
-def require_manager(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role == "super_admin":
-        return current_user
-    if current_user.role == "company_admin":
-        return current_user
-    if current_user.role == "manager":
-        return current_user
-    raise HTTPException(status_code=403, detail="Недостаточно прав доступа")
-
-
-def require_employee(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != "employee":
-        raise HTTPException(status_code=403, detail="Требуется роль сотрудника")
-    return current_user
-
-def require_mentor(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != "mentor":
-        raise HTTPException(status_code=403, detail="Требуется роль наставника")
-    return current_user
-
-
-# Универсальная проверка ролей
-def require_roles(*roles: str):
-    def role_checker(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role == "super_admin":
+def require_global_roles(*roles: GlobalRole):
+    """Factory-dependency: пропускает, если global_role пользователя
+    входит в список *roles либо он SuperAdmin."""
+    def checker(current_user=Depends(get_current_user)):
+        if current_user.global_role == GlobalRole.SUPER_ADMIN:
             return current_user
-        if current_user.role in roles:
+        if current_user.global_role in roles:
             return current_user
-        raise HTTPException(status_code=403, detail="Недостаточно прав доступа")
-    return role_checker
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Недостаточно прав доступа",
+        )
+    return checker
+
+# ---------------------------------------------------------------------------
+# Membership helpers
+# ---------------------------------------------------------------------------
+
+def get_active_membership(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Membership | None:
+    """Возвращает первое ACTIVE-членство текущего пользователя."""
+    return (
+        db.query(Membership)
+        .filter(
+            Membership.user_id == current_user.id,
+            Membership.status == MembershipStatus.ACTIVE,
+        )
+        .first()
+    )
+
+
+def require_membership_roles(*roles: MembershipRole):
+    """Factory-dependency: проверяет роль активного Membership."""
+    def checker(membership=Depends(get_active_membership)):
+        if membership is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Нет активного членства",
+            )
+        if membership.role == MembershipRole.OWNER or membership.role in roles:
+            return membership
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Недостаточно прав доступа",
+        )
+    return checker

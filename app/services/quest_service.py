@@ -1,122 +1,90 @@
+from __future__ import annotations
+from datetime import datetime
+
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-from app.models.quest import QuestTemplate
-from app.models.quest import QuestStep
-from app.models.quest import QuestAssignment
-from app.models.quest import QuestProgress
 
-from app.schemas.quest import QuestTemplateCreate, QuestTemplateUpdate
-from app.schemas.quest import QuestStepCreate
-from app.schemas.quest import QuestAssignmentCreate
-from app.schemas.quest import QuestProgressCreate, QuestProgressUpdate
+from app.services.base import UnitOfWork, GenericRepository
+from app.models.models import Quest, QuestStep, QuestAssignment, QuestStepSubmission, Membership
+from app.schemas.quest import (
+    QuestCreate, QuestUpdate,
+    QuestStepCreate, QuestStepUpdate,
+    QuestAssignmentCreate,
+    QuestStepSubmissionUpdate
+)
+from app.models.enums import QuestStatus, StepSubmissionStatus
 
-# ----------------------------
-# QuestTemplate CRUD
-# ----------------------------
 
-def create_quest_template(db: Session, data: QuestTemplateCreate) -> QuestTemplate:
-    # 1. Create template without steps
-    template = QuestTemplate(
-        title=data.title,
-        description=data.description,
-        author_id=data.author_id,
-        company_id=data.company_id,
-        deadline_days=data.deadline_days
-    )
-    db.add(template)
-    db.commit()
-    db.refresh(template)
+class QuestService(GenericRepository[Quest]):
+    """Service for managing quests and quest assignments."""
 
-    # 2. Add steps linked to the template
-    for step_data in data.steps:
-        step = QuestStep(
-            title=step_data.title,
-            description=step_data.description,
-            order=step_data.order,
-            points=step_data.points,
-            author_id=step_data.author_id,
-            deadline_days=step_data.deadline_days,
-            quest_template_id=template.id
-        )
-        db.add(step)
-    db.commit()
-    db.refresh(template)
-    return template
+    def __init__(self, uow: UnitOfWork) -> None:
+        super().__init__(uow, Quest)
+        self.uow = uow
 
-def get_all_quest_templates(db: Session):
-    return db.query(QuestTemplate).all()
+    def create(self, data: QuestCreate, creator: Membership) -> Quest:
+        """Create a new quest template."""
+        with self.uow as uow:
+            quest = Quest(**data.model_dump(), created_by_member=creator.id)
+            uow.session.add(quest)
+            uow.commit()
+            return quest
 
-def get_quest_template(db: Session, template_id: int):
-    return db.query(QuestTemplate).filter(QuestTemplate.id == template_id).first()
+    def update(self, quest: Quest, data: QuestUpdate) -> Quest:
+        """Update fields of an existing quest."""
+        with self.uow as uow:
+            updates = data.model_dump(exclude_unset=True)
+            for field, value in updates.items():
+                setattr(quest, field, value)
+            uow.commit()
+            return quest
 
-def update_quest_template(db: Session, template_id: int, data: QuestTemplateUpdate):
-    template = get_quest_template(db, template_id)
-    if not template:
-        return None
-    for field, value in data.model_dump(exclude_unset=True).items():
-        setattr(template, field, value)
-    db.commit()
-    db.refresh(template)
-    return template
+    def publish(self, quest: Quest) -> Quest:
+        """Publish a draft quest."""
+        if quest.status != QuestStatus.DRAFT:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only draft quests can be published"
+            )
+        with self.uow as uow:
+            quest.status = QuestStatus.PUBLISHED
+            uow.commit()
+            return quest
 
-def delete_quest_template(db: Session, template_id: int):
-    template = get_quest_template(db, template_id)
-    if not template:
-        return False
-    db.delete(template)
-    db.commit()
-    return True
+    def assign_quest(
+        self,
+        data: QuestAssignmentCreate,
+        assigned_by: Membership | None = None
+    ) -> QuestAssignment:
+        """Assign a quest to a member, auto-calculating due date."""
+        with self.uow as uow:
+            assignment = QuestAssignment(**data.model_dump())
+            assignment.assigned_by_member = assigned_by.id if assigned_by else None
+            uow.session.add(assignment)
+            # due_at is set by model event listener
+            uow.commit()
+            return assignment
 
-# ----------------------------
-# QuestAssignment CRUD
-# ----------------------------
+    def complete_step(
+        self,
+        submission: QuestStepSubmission,
+        data: QuestStepSubmissionUpdate
+    ) -> QuestStepSubmission:
+        """Submit or approve a quest step."""
+        with self.uow as uow:
+            updates = data.model_dump(exclude_unset=True)
+            for field, value in updates.items():
+                setattr(submission, field, value)
+            submission.submitted_at = datetime.utcnow()
+            if submission.status == StepSubmissionStatus.APPROVED:
+                submission.reviewed_at = datetime.utcnow()
+            uow.commit()
+            return submission
 
-def assign_quest(db: Session, data: QuestAssignmentCreate) -> QuestAssignment:
-    assignment = QuestAssignment(**data.model_dump())
-    db.add(assignment)
-    db.commit()
-    db.refresh(assignment)
-    return assignment
-
-def get_assignments_for_user(db: Session, user_id: int):
-    return db.query(QuestAssignment).filter(QuestAssignment.user_id == user_id).all()
-
-def get_assignment(db: Session, assignment_id: int):
-    return db.query(QuestAssignment).filter(QuestAssignment.id == assignment_id).first()
-
-def get_all_assignments(db: Session):
-    return db.query(QuestAssignment).all()
-
-def delete_assignment(db: Session, assignment_id: int):
-    assignment = get_assignment(db, assignment_id)
-    if not assignment:
-        return False
-    db.delete(assignment)
-    db.commit()
-    return True
-
-# ----------------------------
-# QuestProgress CRUD
-# ----------------------------
-
-def create_progress(db: Session, data: QuestProgressCreate) -> QuestProgress:
-    progress = QuestProgress(**data.model_dump())
-    db.add(progress)
-    db.commit()
-    db.refresh(progress)
-    return progress
-
-def list_progress_by_assignment(db: Session, assignment_id: int):
-    return db.query(QuestProgress).filter(QuestProgress.assignment_id == assignment_id).all()
-
-def get_progress(db: Session, assignment_id: int):
-    return list_progress_by_assignment(db, assignment_id)
-
-def update_progress(db: Session, progress_id: int, data: QuestProgressUpdate):
-    progress = db.query(QuestProgress).filter(QuestProgress.id == progress_id).first()
-    if not progress:
-        return None
-    for field, value in data.model_dump(exclude_unset=True).items():
-        setattr(progress, field, value)
-    db.commit()
-    db.refresh(progress)
-    return progress
+    def compute_progress(self, assignment: QuestAssignment) -> float:
+        """Compute completion percentage for a quest assignment."""
+        total = len(assignment.submissions)
+        if total == 0:
+            return 0.0
+        completed = sum(1 for s in assignment.submissions if s.status == StepSubmissionStatus.APPROVED)
+        return (completed / total) * 100.0

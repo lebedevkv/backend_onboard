@@ -1,14 +1,12 @@
-fastapi==0.110.0
-uvicorn[standard]==0.29.0
-sqlalchemy==2.0.29
-pydantic==2.7.0
-pydantic-settings==2.2.1
-alembic==1.13.1
-psycopg2-binary==2.9.9
-python-dotenv==1.0.1
-pytest==8.1.1
 
-passlib[bcrypt]==1.7.4
-email-validator==2.1.1
-python-jose==3.3.0
-pytest-asyncio==0.23.5
+uvicorn[standard]
+sqlalchemy>=2.0
+psycopg[binary]
+alembic
+
+passlib[bcrypt]
+python-jose[cryptography]
+python-dotenv
+fastapi>=0.116,<1.0          # или просто fastapi для «последней»
+pydantic>=2.11,<3.0
+pydantic-settings>=1.0

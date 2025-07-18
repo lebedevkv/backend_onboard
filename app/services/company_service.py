@@ -1,32 +1,52 @@
-
-
+from __future__ import annotations
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-from app.models.company import Company
+from uuid import UUID
+
+from app.services.base import UnitOfWork, GenericRepository
+from app.models.models import Company, Membership
+from app.models.enums import MembershipRole, MembershipStatus
 from app.schemas.company import CompanyCreate, CompanyUpdate
 
 
-def create_company(db: Session, data: CompanyCreate) -> Company:
-    company = Company(**data.model_dump())
-    db.add(company)
-    db.commit()
-    db.refresh(company)
-    return company
+class CompanyService:
+    """Service for creating and managing companies."""
 
+    def __init__(self, uow: UnitOfWork) -> None:
+        self.uow = uow
+        self._repo = GenericRepository[Company](uow, Company)
 
-def get_company_by_id(db: Session, company_id: int) -> Company | None:
-    return db.query(Company).filter(Company.id == company_id).first()
+    def create_self_signup(self, data: CompanyCreate, owner_user_id: UUID) -> Company:
+        """Create a new company and assign the owner user as CompanyOwner."""
+        with self.uow as uow:
+            # Create company
+            company = Company(**data.model_dump())
+            uow.session.add(company)
+            uow.commit()
+            # Assign owner membership
+            membership = Membership(
+                user_id=owner_user_id,
+                company_id=company.id,
+                role=MembershipRole.OWNER,
+                status=MembershipStatus.ACTIVE
+            )
+            uow.session.add(membership)
+            uow.commit()
+            return company
 
+    def get_by_id(self, company_id: UUID) -> Company | None:
+        """Fetch a company by its ID."""
+        return self._repo.get(company_id)
 
-def get_all_companies(db: Session) -> list[Company]:
-    return db.query(Company).all()
+    def list(self) -> list[Company]:
+        """List all companies."""
+        return self._repo.list()
 
-
-def update_company(db: Session, company_id: int, data: CompanyUpdate) -> Company | None:
-    company = get_company_by_id(db, company_id)
-    if not company:
-        return None
-    for key, value in data.model_dump(exclude_unset=True).items():
-        setattr(company, key, value)
-    db.commit()
-    db.refresh(company)
-    return company
+    def update(self, company: Company, data: CompanyUpdate) -> Company:
+        """Update fields of an existing company."""
+        with self.uow as uow:
+            updates = data.model_dump(exclude_unset=True)
+            for field, value in updates.items():
+                setattr(company, field, value)
+            uow.commit()
+            return company

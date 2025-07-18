@@ -7,7 +7,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import ValidationError
 from app.core.config import settings
-from app.models.user import User
+from app.models.models import User
 from app.db.session import SessionLocal
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

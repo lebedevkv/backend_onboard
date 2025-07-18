@@ -1,199 +1,139 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from __future__ import annotations
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from uuid import UUID
 
-from app.db.session import get_db
-# Schemas
-from app.schemas.quest import QuestTemplateCreate, QuestTemplateResponse
-from app.schemas.quest import QuestAssignmentCreate, QuestAssignmentResponse
-from app.schemas.quest import QuestProgressCreate, QuestProgressUpdate, QuestProgressResponse
-# Services
-from app.services.quest_service import (
-    create_quest_template,
-    get_all_quest_templates,
-    get_quest_template,
-    update_quest_template,
-    delete_quest_template,
+from app.schemas.quest import (
+    QuestCreate, QuestRead, QuestUpdate,
+    QuestAssignmentCreate, QuestAssignmentRead,
+    QuestStepSubmissionUpdate, QuestStepSubmissionRead
 )
-from app.services.quest_service import (
-    assign_quest,
-    get_assignments_for_user,
-    get_all_assignments,
-    delete_assignment,
-)
-from app.services.quest_service import (
-    create_progress,
-    get_progress,
-    update_progress,
-)
-# Dependencies
-from app.utils.dependencies import (
-    get_current_user,
-    require_admin_or_hr,
-    require_super_admin,
-    require_manager,
-    require_employee,
-    require_mentor,
-)
-# Models
-from app.models.user import User
-from app.models.quest import QuestAssignment
+from app.services.quest_service import QuestService
+from app.services.base import UnitOfWork
+from app.models.models import Membership, MembershipRole, MembershipStatus
+from app.utils.dependencies import get_db, get_current_user
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1/quests", tags=["quests"])
 
-# Quest Template Endpoints
-@router.post("/templates/", response_model=QuestTemplateResponse)
-def create_template(
-    template_in: QuestTemplateCreate,
-    _: any = Depends(require_admin_or_hr),
-    db: Session = Depends(get_db),
-):
-    return create_quest_template(db, template_in)
+# Dependency: UnitOfWork
 
-@router.get("/templates/", response_model=List[QuestTemplateResponse])
-def read_all_templates(
-    _: any = Depends(require_admin_or_hr),
-    db: Session = Depends(get_db),
-):
-    return get_all_quest_templates(db)
+def get_uow(db: Session = Depends(get_db)) -> UnitOfWork:
+    return UnitOfWork(lambda: db)
 
-@router.get("/templates/{template_id}", response_model=QuestTemplateResponse)
-def read_template(
-    template_id: int,
-    _: any = Depends(require_admin_or_hr),
-    db: Session = Depends(get_db),
-):
-    template = get_quest_template(db, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="Шаблон не найден")
-    return template
+# Dependency: QuestService
+def get_quest_service(uow: UnitOfWork = Depends(get_uow)) -> QuestService:
+    return QuestService(uow)
 
-@router.put("/templates/{template_id}", response_model=QuestTemplateResponse)
-def update_template(
-    template_id: int,
-    template_in: QuestTemplateCreate,
-    _: any = Depends(require_admin_or_hr),
-    db: Session = Depends(get_db),
-):
-    updated = update_quest_template(db, template_id, template_in)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Шаблон не найден")
-    return updated
+@router.post("/", response_model=QuestRead, status_code=status.HTTP_201_CREATED)
+def create_quest(
+    data: QuestCreate,
+    current_user=Depends(get_current_user),
+    uow: UnitOfWork = Depends(get_uow),
+    service: QuestService = Depends(get_quest_service)
+) -> QuestRead:
+    # Ensure user has active membership
+    with uow as u:
+        membership = (
+            u.session.query(Membership)
+            .filter(
+                Membership.user_id == current_user.id,
+                Membership.status == MembershipStatus.ACTIVE
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "No active membership")
+    quest = service.create(data, membership)
+    return QuestRead.model_validate(quest)
 
-@router.delete("/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_template(
-    template_id: int,
-    _: any = Depends(require_admin_or_hr),
-    db: Session = Depends(get_db),
-):
-    deleted = delete_quest_template(db, template_id)
-    if not deleted:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Шаблон не найден")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+@router.get("/company/{company_id}", response_model=list[QuestRead])
+def list_company_quests(
+    company_id: UUID,
+    service: QuestService = Depends(get_quest_service)
+) -> list[QuestRead]:
+    quests = service.list(company_id=company_id)
+    return [QuestRead.model_validate(q) for q in quests]
 
-# Quest Assignment Endpoints
-@router.post("/assignments/", response_model=QuestAssignmentResponse)
-def assign_quest_to_user(
+@router.get("/{quest_id}", response_model=QuestRead)
+def get_quest(
+    quest_id: UUID,
+    service: QuestService = Depends(get_quest_service)
+) -> QuestRead:
+    quest = service.get(quest_id)
+    if not quest:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Quest not found")
+    return QuestRead.model_validate(quest)
+
+@router.patch("/{quest_id}", response_model=QuestRead)
+def update_quest(
+    quest_id: UUID,
+    data: QuestUpdate,
+    service: QuestService = Depends(get_quest_service)
+) -> QuestRead:
+    quest = service.get(quest_id)
+    if not quest:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Quest not found")
+    updated = service.update(quest, data)
+    return QuestRead.model_validate(updated)
+
+@router.post("/{quest_id}/publish", response_model=QuestRead)
+def publish_quest(
+    quest_id: UUID,
+    service: QuestService = Depends(get_quest_service)
+) -> QuestRead:
+    quest = service.get(quest_id)
+    if not quest:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Quest not found")
+    published = service.publish(quest)
+    return QuestRead.model_validate(published)
+
+@router.post("/{quest_id}/assign", response_model=QuestAssignmentRead)
+def assign_quest(
+    quest_id: UUID,
     data: QuestAssignmentCreate,
-    db: Session = Depends(get_db),
-    _: any = Depends(require_admin_or_hr),
-):
-    return assign_quest(db, data)
+    current_user=Depends(get_current_user),
+    uow: UnitOfWork = Depends(get_uow),
+    service: QuestService = Depends(get_quest_service)
+) -> QuestAssignmentRead:
+    # Ensure assigner has membership
+    with uow as u:
+        membership = (
+            u.session.query(Membership)
+            .filter(
+                Membership.user_id == current_user.id,
+                Membership.status == MembershipStatus.ACTIVE
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "No active membership")
+    assignment = service.assign_quest(data, assigned_by=membership)
+    return QuestAssignmentRead.model_validate(assignment)
 
-@router.get("/assignments/user/{user_id}", response_model=List[QuestAssignmentResponse])
-def read_assignments_for_user(user_id: int, db: Session = Depends(get_db)):
-    return get_assignments_for_user(db, user_id)
+@router.patch("/assignments/{submission_id}", response_model=QuestStepSubmissionRead)
+def submit_quest_step(
+    submission_id: UUID,
+    data: QuestStepSubmissionUpdate,
+    service: QuestService = Depends(get_quest_service)
+) -> QuestStepSubmissionRead:
+    # Fetch submission via underlying repository
+    submission = service.uow.session.get(QuestStepSubmission, submission_id)  # type: ignore
+    if not submission:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Submission not found")
+    updated = service.complete_step(submission, data)
+    return QuestStepSubmissionRead.model_validate(updated)
 
-@router.get("/assignments/", response_model=List[QuestAssignmentResponse])
-def read_all_assignments(
-    db: Session = Depends(get_db),
-    _: any = Depends(require_admin_or_hr),
-):
-    return get_all_assignments(db)
-
-@router.get("/assignments/my-assignments", response_model=List[QuestAssignmentResponse])
-def get_my_assignments(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return get_assignments_for_user(db, current_user.id)
-
-@router.delete("/assignments/{assignment_id}", status_code=204)
-def remove_assignment(
-    assignment_id: int,
-    db: Session = Depends(get_db),
-    _: any = Depends(require_admin_or_hr),
-):
-    result = delete_assignment(db, assignment_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Назначение не найдено")
-
-# Quest Progress Endpoints
-@router.post("/progress/", response_model=QuestProgressResponse)
-def create_quest_progress(
-    data: QuestProgressCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return create_progress(db, data)
-
-@router.get("/progress/{assignment_id}", response_model=List[QuestProgressResponse])
-def read_progress(
-    assignment_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    # superadmin and hr/admin
-    try:
-        require_super_admin(current_user)
-        return get_progress(db, assignment_id)
-    except HTTPException:
-        pass
-    try:
-        require_admin_or_hr(current_user)
-        return get_progress(db, assignment_id)
-    except HTTPException:
-        pass
-    # mentor
-    try:
-        require_mentor(current_user)
-        assignment = db.query(QuestAssignment).filter_by(id=assignment_id).first()
-        if not assignment:
-            raise HTTPException(status_code=404, detail="Назначение не найдено")
-        mentee = db.query(User).filter_by(id=assignment.user_id).first()
-        if mentee and mentee.mentor_id == current_user.id:
-            return get_progress(db, assignment_id)
-    except HTTPException:
-        pass
-    # manager
-    try:
-        require_manager(current_user)
-        assignment = db.query(QuestAssignment).filter_by(id=assignment_id).first()
-        if not assignment:
-            raise HTTPException(status_code=404, detail="Назначение не найдено")
-        subordinate = db.query(User).filter_by(id=assignment.user_id).first()
-        if subordinate and subordinate.manager_id == current_user.id:
-            return get_progress(db, assignment_id)
-    except HTTPException:
-        pass
-    # employee
-    try:
-        require_employee(current_user)
-        assignment = db.query(QuestAssignment).filter_by(id=assignment_id).first()
-        if assignment and assignment.user_id == current_user.id:
-            return get_progress(db, assignment_id)
-    except HTTPException:
-        pass
-    raise HTTPException(status_code=403, detail="Недостаточно прав доступа")
-
-@router.put("/progress/{progress_id}", response_model=QuestProgressResponse)
-def update_quest_progress(
-    progress_id: int,
-    data: QuestProgressUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = update_progress(db, progress_id, data)
-    if not result:
-        raise HTTPException(status_code=404, detail="Прогресс не найден")
-    return result
+@router.get("/{quest_id}/progress", response_model=list[QuestStepSubmissionRead])
+def get_quest_progress(
+    quest_id: UUID,
+    uow: UnitOfWork = Depends(get_uow)
+) -> list[QuestStepSubmissionRead]:
+    # List all submissions for this quest assignment
+    with uow as u:
+        submissions = (
+            u.session.query(QuestStepSubmission)
+            .join(QuestAssignment)
+            .filter(QuestAssignment.quest_id == quest_id)
+            .all()
+        )
+    return [QuestStepSubmissionRead.model_validate(s) for s in submissions]

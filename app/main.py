@@ -1,39 +1,51 @@
+from __future__ import annotations
+import uvicorn
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.core.config import settings
 from app.db.base import Base
 from app.db.session import engine
-from app.api.v1 import auth, users, company, employee, tasks, evaluations, pulse, development, quest
+from app.api.v1 import (
+    auth, users, companies, employees,
+    quests, tasks, evaluations,
+    pulse, development
+)
 
 app = FastAPI(title="HR Onboard Platform")
 
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # или ["http://localhost:63342"] — точечно
+    allow_origins=settings.CORS_ORIGINS or ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Только на этапе разработки — создаёт таблицы по моделям
+# Create tables based on models (development only)
 Base.metadata.create_all(bind=engine)
 
-# Подключение маршрутов
-app.include_router(auth.router, prefix="/auth", tags=["auth"])
-app.include_router(users.router, prefix="/users", tags=["users"])
-app.include_router(company.router, prefix="/companies", tags=["companies"])
-app.include_router(employee.router, prefix="/employees", tags=["employees"])
-app.include_router(quest.router, prefix="/quests", tags=["quests"])
+# Include API routers
+app.include_router(auth.router)
+app.include_router(users.router)
+app.include_router(companies.router)
+app.include_router(employees.router)
+app.include_router(quests.router)
+app.include_router(tasks.router)
+app.include_router(evaluations.router)
+app.include_router(pulse.router)
+app.include_router(development.router)
 
-
-app.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
-app.include_router(evaluations.router, prefix="/evaluations", tags=["evaluations"])
-app.include_router(pulse.router, prefix="/pulse", tags=["pulse"])
-app.include_router(development.router, prefix="/development", tags=["development"])
-
-@app.get("/")
-def root():
-    return {"message": "✅ HR Onboard backend работает"}
+@app.get("/", tags=["root"])
+async def root() -> dict[str, str]:
+    return {"message": "✅ HR Onboard backend is running"}
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8010, reload=True)
+    uvicorn.run(
+        "main:app",
+        host=settings.SERVER_HOST,
+        port=settings.SERVER_PORT,
+        reload=True,
+    )

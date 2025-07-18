@@ -1,5 +1,5 @@
 from app.db.session import SessionLocal
-from app.models.user import User
+from app.models.models import User
 
 def clear_users():
     db = SessionLocal()
